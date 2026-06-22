@@ -67,6 +67,9 @@ managing the full Software Development Lifecycle (SDLC) of a project called Esse
 # ─────────────────────────────────────────────────────────────
 # Settings
 # ─────────────────────────────────────────────────────────────
+SUPPORTED_PROVIDERS = ("stub", "groq", "ollama", "gemini", "openai", "anthropic")
+
+
 @dataclass
 class Settings:
     provider: str = field(default_factory=lambda: (
@@ -88,6 +91,8 @@ class Settings:
 
     db_path: str  = field(default_factory=lambda: os.getenv("FORGE_DB", "forge.db"))
     verbose: bool = field(default_factory=lambda: os.getenv("FORGE_VERBOSE", "0") == "1")
+    llm_timeout: float = field(default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "60")))
+    max_tool_iterations: int = field(default_factory=lambda: int(os.getenv("FORGE_TOOL_ITERATIONS", "3")))
 
     # Path to the Essence project (for git/file tools)
     essence_path: str = field(default_factory=lambda: os.getenv("ESSENCE_PATH", "."))
@@ -99,16 +104,23 @@ class Settings:
 
     def get_llm_client(self):
         """Return an initialised LLM client, or None for stub mode."""
+        if self.provider == "stub":
+            return None
+        if self.provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unsupported LLM_PROVIDER={self.provider!r}. "
+                f"Use one of: {', '.join(SUPPORTED_PROVIDERS)}"
+            )
         if self.provider == "groq":
-            return _get_groq_client(self.groq_api_key)
+            return _get_groq_client(self.groq_api_key, timeout=self.llm_timeout)
         if self.provider == "ollama":
-            return _get_ollama_client(self.ollama_base_url)
+            return _get_ollama_client(self.ollama_base_url, timeout=self.llm_timeout)
         if self.provider == "gemini":
             return _get_gemini_client(self.gemini_api_key)
         if self.provider == "openai":
-            return _get_openai_client(self.openai_api_key)
+            return _get_openai_client(self.openai_api_key, timeout=self.llm_timeout)
         if self.provider == "anthropic":
-            return _get_anthropic_client(self.anthropic_api_key)
+            return _get_anthropic_client(self.anthropic_api_key, timeout=self.llm_timeout)
         return None
 
     def is_llm_enabled(self) -> bool:
@@ -145,7 +157,7 @@ def _ollama_available() -> bool:
 # ─────────────────────────────────────────────────────────────
 # Client factories
 # ─────────────────────────────────────────────────────────────
-def _get_groq_client(api_key: Optional[str]):
+def _get_groq_client(api_key: Optional[str], timeout: float):
     """
     Groq uses the openai package pointed at the Groq endpoint.
     No separate groq package required.
@@ -157,18 +169,20 @@ def _get_groq_client(api_key: Optional[str]):
         return OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1",
+            timeout=timeout,
         )
     except ImportError:
         raise ImportError("Install openai: pip install openai")
 
 
-def _get_ollama_client(base_url: str):
+def _get_ollama_client(base_url: str, timeout: float):
     """Ollama also exposes an OpenAI-compatible /v1 endpoint."""
     try:
         from openai import OpenAI  # type: ignore
         return OpenAI(
             api_key="ollama",   # required by the SDK but ignored by Ollama
             base_url=f"{base_url}/v1",
+            timeout=timeout,
         )
     except ImportError:
         raise ImportError("Install openai: pip install openai")
@@ -185,22 +199,22 @@ def _get_gemini_client(api_key: Optional[str]):
         raise ImportError("Install google-generativeai: pip install google-generativeai")
 
 
-def _get_openai_client(api_key: Optional[str]):
+def _get_openai_client(api_key: Optional[str], timeout: float):
     try:
         from openai import OpenAI  # type: ignore
         if not api_key:
             raise ValueError("OPENAI_API_KEY not set")
-        return OpenAI(api_key=api_key)
+        return OpenAI(api_key=api_key, timeout=timeout)
     except ImportError:
         raise ImportError("Install openai: pip install openai")
 
 
-def _get_anthropic_client(api_key: Optional[str]):
+def _get_anthropic_client(api_key: Optional[str], timeout: float):
     try:
         import anthropic  # type: ignore
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not set")
-        return anthropic.Anthropic(api_key=api_key)
+        return anthropic.Anthropic(api_key=api_key, timeout=timeout)
     except ImportError:
         raise ImportError("Install anthropic: pip install anthropic")
 

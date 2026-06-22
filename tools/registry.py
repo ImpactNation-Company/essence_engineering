@@ -16,20 +16,24 @@ from config import settings
 from tools.base import Tool
 from utils.logger import log
 
-_TOOL_CALL_RE = re.compile(r'TOOL_CALL:\s*(\w+)\(([^)]*)\)', re.IGNORECASE)
+_TOOL_CALL_RE = re.compile(
+    r"^[ \t]*TOOL_CALL:\s*([a-zA-Z_][\w-]*)\((.*)\)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 class ToolRegistry:
 
-    def __init__(self, project_path: Optional[str] = None):
+    def __init__(self, project_path: Optional[str] = None, db_path: Optional[str] = None):
         self._tools: Dict[str, Tool] = {}
-        self._register_defaults(project_path or settings.essence_path)
+        self._register_defaults(project_path or settings.essence_path, db_path or settings.db_path)
 
-    def _register_defaults(self, project_path: str) -> None:
+    def _register_defaults(self, project_path: str, db_path: str) -> None:
         from tools.calculator import CalculatorTool
         from tools.web_search import WebSearchTool
         from tools.git_tool import GitStatusTool, GitLogTool, GitDiffTool
         from tools.file_tool import ReadFileTool, ListDirTool
+        from tools.sdlc_tool import SDLCReportTool
 
         for tool in [
             CalculatorTool(),
@@ -39,6 +43,7 @@ class ToolRegistry:
             GitDiffTool(project_path),
             ReadFileTool(project_path),
             ListDirTool(project_path),
+            SDLCReportTool(db_path),
         ]:
             self.register(tool)
 

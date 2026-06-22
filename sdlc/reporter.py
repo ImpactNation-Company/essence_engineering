@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime
 from typing import Optional
 
+from sdlc.database import initialize_sdlc
 from sdlc.models import Sprint
 from utils.logger import log
 
@@ -15,6 +16,7 @@ class ProjectReporter:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        initialize_sdlc(conn)
 
     # ──────────────────────────────────────────
     # Sprint Report
@@ -24,7 +26,7 @@ class ProjectReporter:
         """Full sprint status report. Uses active sprint if sprint_id is None."""
         sprint = self._get_sprint(sprint_id)
         if not sprint:
-            return "⚠️  No active sprint. Start one with: `python main.py sprint start \"Sprint Name\"`"
+            return "No active sprint. Create one with `python3 main.py sprint create \"Sprint Name\"`, then start it with `python3 main.py sprint start <id>`."
 
         items = self._sprint_items(sprint.id)
         burndown = self._burndown(sprint.id)
@@ -189,33 +191,45 @@ class ProjectReporter:
             return {}
 
     def _critical_issue_count(self) -> int:
-        cur = self.conn.execute(
-            "SELECT COUNT(*) as n FROM issues WHERE severity='critical' AND status='open'"
-        )
-        return cur.fetchone()["n"]
+        try:
+            cur = self.conn.execute(
+                "SELECT COUNT(*) as n FROM issues WHERE severity='critical' AND status='open'"
+            )
+            return cur.fetchone()["n"]
+        except sqlite3.OperationalError:
+            return 0
 
     def _critical_issues_list(self) -> list:
-        cur = self.conn.execute("""
-            SELECT id, title, severity FROM issues
-            WHERE status IN ('open','in_progress') AND severity IN ('critical','high')
-            ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END
-            LIMIT 10
-        """)
-        return [dict(r) for r in cur.fetchall()]
+        try:
+            cur = self.conn.execute("""
+                SELECT id, title, severity FROM issues
+                WHERE status IN ('open','in_progress') AND severity IN ('critical','high')
+                ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END
+                LIMIT 10
+            """)
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
 
     def _items_by_status(self, status: str) -> list:
-        cur = self.conn.execute("""
-            SELECT id, title FROM backlog_items WHERE status=? LIMIT 10
-        """, (status,))
-        return [dict(r) for r in cur.fetchall()]
+        try:
+            cur = self.conn.execute("""
+                SELECT id, title FROM backlog_items WHERE status=? LIMIT 10
+            """, (status,))
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
 
     def _items_by_status_today(self, status: str) -> list:
         today = datetime.utcnow().strftime("%Y-%m-%d")
-        cur = self.conn.execute("""
-            SELECT id, title FROM backlog_items
-            WHERE status=? AND updated_at LIKE ? LIMIT 10
-        """, (status, f"{today}%"))
-        return [dict(r) for r in cur.fetchall()]
+        try:
+            cur = self.conn.execute("""
+                SELECT id, title FROM backlog_items
+                WHERE status=? AND updated_at LIKE ? LIMIT 10
+            """, (status, f"{today}%"))
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
 
     def _progress_bar(self, pct: int, width: int = 30) -> str:
         filled = round(pct / 100 * width)

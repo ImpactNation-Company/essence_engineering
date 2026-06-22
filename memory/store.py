@@ -7,6 +7,7 @@ Schema (auto-migrated):
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -16,19 +17,23 @@ from utils.logger import log
 
 class MemoryStore:
 
-    def __init__(self, db_path: str = "essence.db"):
+    def __init__(self, db_path: str = "essence.db", conn: sqlite3.Connection | None = None):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self._init_db()
+        if conn is None:
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+        else:
+            self.conn = conn
+        self.fts_enabled = self.init_schema(self.conn)
         log("MEM", f"Connected to DB: {db_path}")
 
     # ──────────────────────────────────────────
     # Schema
     # ──────────────────────────────────────────
 
-    def _init_db(self) -> None:
-        cur = self.conn.cursor()
+    @classmethod
+    def init_schema(cls, conn: sqlite3.Connection) -> bool:
+        cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS memory (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,12 +44,14 @@ class MemoryStore:
                 timestamp  TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
-        self.conn.commit()
-        self._migrate()
+        conn.commit()
+        cls._migrate(conn)
+        return cls._init_fts(conn)
 
-    def _migrate(self) -> None:
+    @classmethod
+    def _migrate(cls, conn: sqlite3.Connection) -> None:
         """Add new columns to existing databases without dropping data."""
-        cur = self.conn.cursor()
+        cur = conn.cursor()
         cur.execute("PRAGMA table_info(memory)")
         existing_cols = {row["name"] for row in cur.fetchall()}
         additions = {
@@ -55,7 +62,48 @@ class MemoryStore:
             if col not in existing_cols:
                 cur.execute(f"ALTER TABLE memory ADD COLUMN {col} {typedef}")
                 log("MEM", f"Migrated DB: added column '{col}'")
-        self.conn.commit()
+        conn.commit()
+
+    @classmethod
+    def _init_fts(cls, conn: sqlite3.Connection) -> bool:
+        """Initialize deterministic full-text recall when SQLite has FTS5."""
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
+                USING fts5(query, response)
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS memory_ai
+                AFTER INSERT ON memory BEGIN
+                    INSERT INTO memory_fts(rowid, query, response)
+                    VALUES (new.id, new.query, coalesce(new.response, ''));
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS memory_ad
+                AFTER DELETE ON memory BEGIN
+                    DELETE FROM memory_fts WHERE rowid = old.id;
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS memory_au
+                AFTER UPDATE ON memory BEGIN
+                    UPDATE memory_fts
+                    SET query = new.query, response = coalesce(new.response, '')
+                    WHERE rowid = new.id;
+                END
+            """)
+            conn.execute("""
+                INSERT INTO memory_fts(rowid, query, response)
+                SELECT id, query, coalesce(response, '')
+                FROM memory
+                WHERE id NOT IN (SELECT rowid FROM memory_fts)
+            """)
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            log("MEM", f"FTS recall disabled: {e}")
+            return False
 
     # ──────────────────────────────────────────
     # Write
@@ -90,9 +138,14 @@ class MemoryStore:
 
     def recall(self, query: str = "", limit: int = 5) -> List[Dict]:
         """
-        Retrieve the most recent memory entries.
-        If query is non-empty, score by keyword overlap (basic BM25 approximation).
+        Retrieve memory entries.
+        If query is non-empty, prefer FTS5 ranking and fall back to keyword overlap.
         """
+        if query and self.fts_enabled:
+            records = self._recall_fts(query, limit)
+            if records:
+                return records
+
         cur = self.conn.cursor()
         cur.execute("""
             SELECT id, query, response, reasoning, reflection, timestamp
@@ -154,8 +207,47 @@ class MemoryStore:
 
     def _rank_by_relevance(self, records: List[Dict], query: str) -> List[Dict]:
         """Score records by keyword overlap with current query."""
-        qwords = set(query.lower().split())
+        qwords = set(_tokenize(query))
         def score(rec: Dict) -> int:
-            rwords = set((rec.get("query", "") + " " + rec.get("response", "")).lower().split())
+            rwords = set(_tokenize(rec.get("query", "") + " " + rec.get("response", "")))
             return len(qwords & rwords)
         return sorted(records, key=score, reverse=True)
+
+    def _recall_fts(self, query: str, limit: int) -> List[Dict]:
+        terms = _tokenize(query)
+        if not terms:
+            return []
+        match_query = " OR ".join(terms[:12])
+        try:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT m.id, m.query, m.response, m.reasoning, m.reflection, m.timestamp
+                FROM memory_fts
+                JOIN memory AS m ON m.id = memory_fts.rowid
+                WHERE memory_fts MATCH ?
+                ORDER BY bm25(memory_fts), m.id DESC
+                LIMIT ?
+            """, (match_query, limit))
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError as e:
+            log("MEM", f"FTS recall failed, falling back: {e}")
+            return []
+
+
+_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "what", "when",
+    "where", "how", "why", "your", "you", "are", "was", "were", "have",
+    "has", "had", "into", "about", "can", "could", "would", "should",
+}
+
+
+def _tokenize(text: str) -> List[str]:
+    words = re.findall(r"[a-zA-Z0-9_]{3,}", text.lower())
+    seen = set()
+    tokens = []
+    for word in words:
+        if word in _STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        tokens.append(word)
+    return tokens

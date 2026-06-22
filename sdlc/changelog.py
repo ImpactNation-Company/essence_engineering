@@ -11,6 +11,7 @@ import subprocess
 from datetime import datetime
 from typing import List, Optional
 
+from sdlc.database import initialize_sdlc
 from utils.logger import log
 
 
@@ -19,6 +20,7 @@ class ChangelogGenerator:
     def __init__(self, conn: sqlite3.Connection, project_path: str = "."):
         self.conn = conn
         self.project_path = project_path
+        initialize_sdlc(conn)
 
     def generate(
         self,

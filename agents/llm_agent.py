@@ -21,13 +21,19 @@ class LLMAgent(Agent):
     description = f"{AGENT_NAME} — LLM-powered SDLC manager for the Essence project."
 
     def __init__(self):
-        self.client   = settings.get_llm_client()
+        self.client_error: str | None = None
+        try:
+            self.client = settings.get_llm_client()
+        except (ImportError, ValueError) as e:
+            self.client = None
+            self.client_error = str(e)
+            log("ERROR", f"LLM provider setup failed: {e}")
         self.provider = settings.provider
         self.model    = settings.get_model()
         if self.client:
             log("AGENT", f"LLMAgent ready — provider={self.provider}, model={self.model}")
         else:
-            log("AGENT", "No LLM configured — stub mode. Set GROQ_API_KEY in .env (free at console.groq.com)")
+            log("AGENT", "No LLM configured — stub mode active.")
 
     def execute(
         self,
@@ -38,16 +44,14 @@ class LLMAgent(Agent):
     ) -> str:
         if not self.client:
             from agents.stub import StubAgent
-            return StubAgent().execute(query, reasoning, context)
+            response = StubAgent().execute(query, reasoning, context)
+            if self.client_error:
+                response += f"\n\n[Provider setup] {self.client_error}"
+            return response
 
         messages = self._build_messages(query, reasoning, context, tools_available)
         try:
-            if self.provider in ("groq", "openai", "ollama"):
-                return self._call_openai_compat(messages)
-            elif self.provider == "gemini":
-                return self._call_gemini(messages)
-            elif self.provider == "anthropic":
-                return self._call_anthropic(messages)
+            return self._call_messages(messages)
         except Exception as e:
             log("ERROR", f"LLM call failed: {e}")
             return f"[LLM Error] {e}\n\nCheck your API key and network connection."
@@ -62,16 +66,48 @@ class LLMAgent(Agent):
             {"role": "user",   "content": prompt},
         ]
         try:
-            if self.provider in ("groq", "openai", "ollama"):
-                return self._call_openai_compat(messages)
-            elif self.provider == "gemini":
-                return self._call_gemini(messages)
-            elif self.provider == "anthropic":
-                return self._call_anthropic(messages)
+            return self._call_messages(messages)
         except Exception as e:
             log("ERROR", f"LLM raw call failed: {e}")
             return f"[LLM Error] {e}"
         return ""
+
+    def continue_with_tool_results(
+        self,
+        query: str,
+        reasoning: Dict[str, Any],
+        context: List[Dict] = None,
+        previous_response: str = "",
+        tools_used: List[Dict] = None,
+        tools_available: List[Dict] = None,
+    ) -> str:
+        """Ask the model to synthesize a final answer after tool execution."""
+        if not self.client:
+            return previous_response
+
+        tool_lines = []
+        for call in tools_used or []:
+            tool_lines.append(
+                f"- {call.get('tool')}({call.get('args', '')}) -> "
+                f"{str(call.get('result', ''))[:3000]}"
+            )
+
+        follow_up = (
+            "Original user request:\n"
+            f"{query}\n\n"
+            "Previous response after inline tool replacement:\n"
+            f"{previous_response}\n\n"
+            "Tool results:\n"
+            f"{chr(10).join(tool_lines)}\n\n"
+            "Use these results to answer the original request directly. "
+            "Only emit another TOOL_CALL line if another tool is strictly required."
+        )
+        messages = self._build_messages(follow_up, reasoning, context, tools_available)
+        try:
+            return self._call_messages(messages)
+        except Exception as e:
+            log("ERROR", f"LLM tool follow-up failed: {e}")
+            return previous_response
 
     # ──────────────────────────────────────────
     # Message construction
@@ -129,6 +165,15 @@ class LLMAgent(Agent):
             max_tokens=2048,
         )
         return response.choices[0].message.content.strip()
+
+    def _call_messages(self, messages: List[Dict]) -> str:
+        if self.provider in ("groq", "openai", "ollama"):
+            return self._call_openai_compat(messages)
+        if self.provider == "gemini":
+            return self._call_gemini(messages)
+        if self.provider == "anthropic":
+            return self._call_anthropic(messages)
+        return "[Error] Unknown provider."
 
     def _call_gemini(self, messages: List[Dict]) -> str:
         import google.generativeai as genai  # type: ignore
