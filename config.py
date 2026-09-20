@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 try:
     from dotenv import load_dotenv
@@ -147,7 +148,26 @@ def _detect_provider() -> str:
 def _ollama_available() -> bool:
     try:
         import urllib.request
-        url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") + "/api/tags"
+        raw_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+        parsed = urlparse(raw_base_url)
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if not parsed.hostname:
+            return False
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return False
+
+        allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+        if parsed.hostname.lower() not in allowed_hosts:
+            return False
+
+        netloc = parsed.hostname
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+
+        base_url = f"{parsed.scheme}://{netloc}"
+        url = base_url + "/api/tags"
         urllib.request.urlopen(url, timeout=1)
         return True
     except Exception:
