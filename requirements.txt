@@ -1,26 +1,13 @@
-# Forge — SDLC Manager for the Essence Project
+# SDLC Manager for the Essence Project
 # Dependencies: pip install -r requirements.txt
 
 # ── LLM (choose one) ─────────────────────────────────────────
-# Groq: FREE, no credit card, 14,400 req/day — RECOMMENDED
-# Sign up at: https://console.groq.com
-openai>=1.30.0            # Used for Groq AND OpenAI (both use same SDK)
-
-# Uncomment if using Gemini:
+# Uncomment to enable Gemini:
 # google-generativeai>=0.8.0
-
-# Uncomment if using Anthropic/Claude:
-# anthropic>=0.28.0
 
 # ── Core ─────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 rich>=13.7.0
 
-# ── Git integration ───────────────────────────────────────────
+# ── Git Integration ───────────────────────────────────────────
 gitpython>=3.1.40
-
-# ── Optional: richer web search ──────────────────────────────
-# duckduckgo-search>=6.0.0
-
-# NOTE: Ollama requires no Python package — it runs as a local server.
-# Download at: https://ollama.ai and run: ollama pull llama3.3
