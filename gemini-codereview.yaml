@@ -1,0 +1,2 @@
+- name: Gemini code review
+  uses: jgunnink/gemini-review-bot@v1.5.0
